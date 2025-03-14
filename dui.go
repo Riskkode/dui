@@ -1,6 +1,7 @@
 package main
 
 import (
+	"dui/colours"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,12 +14,14 @@ import (
 
 // TreeNode represents a node in the tree structure
 type TreeNode struct {
-	Label    string
-	Children []*TreeNode
-	Expanded bool
-	Parent   *TreeNode
-	Depth    int
-	Data     interface{} // Optional additional data
+	Label        string
+	Children     []*TreeNode
+	Expanded     bool
+	Parent       *TreeNode
+	Depth        int
+	Data         interface{} // Optional additional data
+	IsExecutable bool        // Flag to indicate if node is an executable script
+	ScriptPath   string      // Path to the script to execute
 }
 
 // NewTreeNode creates a new tree node
@@ -28,11 +31,12 @@ func NewTreeNode(label string, parent *TreeNode) *TreeNode {
 		depth = parent.Depth + 1
 	}
 	return &TreeNode{
-		Label:    label,
-		Children: []*TreeNode{},
-		Expanded: false,
-		Parent:   parent,
-		Depth:    depth,
+		Label:        label,
+		Children:     []*TreeNode{},
+		Expanded:     false,
+		Parent:       parent,
+		Depth:        depth,
+		IsExecutable: false,
 	}
 }
 
@@ -43,15 +47,46 @@ func (n *TreeNode) AddChild(label string) *TreeNode {
 	return child
 }
 
+// AddExecutableChild adds a child node that can execute a bash script
+func (n *TreeNode) AddExecutableChild(label string, scriptPath string) *TreeNode {
+	child := n.AddChild(label)
+	child.IsExecutable = true
+	child.ScriptPath = scriptPath
+	return child
+}
+
+// ExecuteScript runs the bash script associated with this node
+func (n *TreeNode) ExecuteScript() error {
+	if !n.IsExecutable {
+		return fmt.Errorf("node %s is not executable", n.Label)
+	}
+
+	// Determine shell to use based on OS
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("bash", n.ScriptPath)
+	} else {
+		cmd = exec.Command(n.ScriptPath)
+	}
+
+	// Set up command to run in the current terminal
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
 // TreeView manages the tree display and navigation
 type TreeView struct {
-	Root         *TreeNode
-	VisibleNodes []*TreeNode
-	SelectedIdx  int
-	TermWidth    int
-	TermHeight   int
-	Running      bool
-	OldState     *term.State
+	Root          *TreeNode
+	VisibleNodes  []*TreeNode
+	SelectedIdx   int
+	TermWidth     int
+	TermHeight    int
+	Running       bool
+	OldState      *term.State
+	StatusMessage string
 }
 
 // NewTreeView creates a new tree view
@@ -111,12 +146,12 @@ func (tv *TreeView) Draw() {
 	clearScreen()
 
 	// Display title and controls
-	fmt.Println("Tree Navigation")
-	fmt.Println("Controls: ↑/↓ = navigate, Enter/Space = expand/collapse, q = quit")
+	colours.Fprint(colours.Cyan, "Developer User Interface")
+	colours.Fprint(colours.Yellow, "Controls: ↑/↓ = navigate, Enter/Space = expand/collapse, x = execute script, q = quit")
 	if runtime.GOOS == "windows" {
-		fmt.Println("Alternate controls: w/s = up/down, e = expand/collapse")
+		colours.Fprint(colours.Yellow, "Alternate controls: w/s = up/down, e = expand/collapse")
 	}
-	fmt.Println(strings.Repeat("-", tv.TermWidth))
+	fmt.Println(strings.Repeat("─", tv.TermWidth))
 
 	// Calculate visible range based on current selection
 	startIdx := 0
@@ -158,9 +193,14 @@ func (tv *TreeView) Draw() {
 		for j := 0; j < node.Depth; j++ {
 			indent += "  "
 		}
+		label := fmt.Sprintf("%s%s%s%s", indent, prefix, "", node.Label)
+		// Add script indicator if executable
+		if node.IsExecutable {
+			execIndicator := "[x] "
+			label = fmt.Sprint(colours.Yellow, fmt.Sprintf("%s%s%s%s", indent, prefix, execIndicator, node.Label), colours.Reset)
+		}
 
 		// Format with highlighting if selected
-		label := fmt.Sprintf("%s%s%s", indent, prefix, node.Label)
 		if i == tv.SelectedIdx {
 			// Try to use reverse video, or fallback to a simple indicator
 			fmt.Printf("\033[7m%s\033[0m\n", label)
@@ -170,11 +210,19 @@ func (tv *TreeView) Draw() {
 	}
 
 	// Status line
-	fmt.Println(strings.Repeat("-", tv.TermWidth))
-	if len(tv.VisibleNodes) > 0 {
-		fmt.Printf("Selected: %s\n", tv.VisibleNodes[tv.SelectedIdx].Label)
+	fmt.Println(strings.Repeat("─", tv.TermWidth))
+	if tv.StatusMessage != "" {
+		fmt.Println(tv.StatusMessage)
+		tv.StatusMessage = "" // Clear status message after displaying
+	} else if len(tv.VisibleNodes) > 0 {
+		selectedNode := tv.VisibleNodes[tv.SelectedIdx]
+		status := fmt.Sprintf("Selected: %s", selectedNode.Label)
+		if selectedNode.IsExecutable {
+			status += fmt.Sprintf(" (Press 'x' to execute: %s)", selectedNode.ScriptPath)
+		}
+		fmt.Println(status)
 	} else {
-		fmt.Println("No nodes available")
+		colours.Err("No nodes available")
 	}
 }
 
@@ -206,6 +254,55 @@ func (tv *TreeView) ToggleExpand() {
 		tv.rebuildVisibleNodes()
 		tv.Draw()
 	}
+}
+
+// ExecuteSelected executes the script of the selected node if it's executable
+func (tv *TreeView) ExecuteSelected() {
+	if len(tv.VisibleNodes) == 0 {
+		return
+	}
+
+	node := tv.VisibleNodes[tv.SelectedIdx]
+	if node.IsExecutable {
+		// Restore terminal to normal mode for script execution
+		term.Restore(int(os.Stdin.Fd()), tv.OldState)
+
+		// Clear screen and show what's being executed
+		clearScreen()
+		colours.Info(fmt.Sprintf("Executing script: %s\n\n", node.ScriptPath))
+
+		// Execute the script
+		err := node.ExecuteScript()
+
+		// After execution, wait for user to press a key
+		colours.Info(fmt.Sprintf("\nScript execution completed. Press enter to return to the menu..."))
+		waitForKeyPress()
+
+		// Return to raw mode for tree view
+		var err2 error
+		tv.OldState, err2 = term.MakeRaw(int(os.Stdin.Fd()))
+		if err2 != nil {
+			fmt.Println("Error returning to raw mode:", err2)
+			tv.Running = false
+			return
+		}
+
+		// Set status message based on execution result
+		if err != nil {
+			tv.StatusMessage = colours.SErr(fmt.Sprintf("Error executing script: %v", err))
+		} else {
+			tv.StatusMessage = colours.SOk(fmt.Sprintf("Successfully executed: %s", node.ScriptPath))
+		}
+
+		tv.Draw()
+	}
+}
+
+// waitForKeyPress waits for a single keypress
+func waitForKeyPress() {
+	// Create a temporary buffer to read a single key
+	buf := make([]byte, 1)
+	os.Stdin.Read(buf)
 }
 
 // readInput reads a sequence of bytes from stdin with timeout
@@ -280,6 +377,9 @@ func (tv *TreeView) Run() {
 		case 'e', 'E', ' ': // Alternative expand/collapse
 			tv.ToggleExpand()
 
+		case 'x', 'X': // Execute script
+			tv.ExecuteSelected()
+
 		case 13: // Enter
 			tv.ToggleExpand()
 
@@ -325,33 +425,21 @@ func clearScreen() {
 }
 
 func main() {
-	// Create a sample tree structure
-	root := NewTreeNode("Root", nil)
+	// Create a sample tree structure with scripts
 
-	projects := root.AddChild("Projects")
-	docs := root.AddChild("Documents")
-	downloads := root.AddChild("Downloads")
+	root := NewTreeNode("DUI", nil)
 
-	// Add some children to projects
-	goProj := projects.AddChild("Go Projects")
-	goProj.AddChild("tree-ui")
-	goProj.AddChild("web-server")
-	goProj.AddChild("cli-tool")
+	scripts := root.AddChild("Scripts")
 
-	jsProj := projects.AddChild("JS Projects")
-	jsProj.AddChild("react-app")
-	jsProj.AddChild("node-api")
-
-	// Add some children to documents
-	docs.AddChild("Resume.pdf")
-	docs.AddChild("Notes.txt")
-	workDocs := docs.AddChild("Work")
-	workDocs.AddChild("Proposal.docx")
-	workDocs.AddChild("Report.xlsx")
-
-	// Add some children to downloads
-	downloads.AddChild("image.png")
-	downloads.AddChild("archive.zip")
+	simpleScripts := scripts.AddChild("Simple Scripts")
+	funScripts := scripts.AddChild("Fun Scripts")
+	// Add executable scripts
+	simpleScripts.AddExecutableChild("Show Date", "D:/golang/dui/scripts/date.sh")
+	funScripts.AddExecutableChild("Countdown", "D:/golang/dui/scripts/countdown.sh")
+	simpleScripts.AddExecutableChild("ip", "D:/golang/dui/scripts/ip_info.sh")
+	funScripts.AddExecutableChild("matrix", "D:/golang/dui/scripts/matrix.sh")
+	simpleScripts.AddExecutableChild("ping", "D:/golang/dui/scripts/ping.sh")
+	simpleScripts.AddExecutableChild("sys_info", "D:/golang/dui/scripts/sys_info.sh")
 
 	// Create and run the tree view
 	treeView := NewTreeView(root)
