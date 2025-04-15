@@ -7,6 +7,23 @@ import (
 	"runtime"
 )
 
+var DefaultMenu = MenuItem{
+	Name:     "dui",
+	ItemType: ItemTypeExe,
+	Children: []MenuItem{
+		{
+			Name:     "Settings",
+			ItemType: ItemTypeNode,
+			Children: []MenuItem{},
+		},
+	},
+}
+
+const (
+	ItemTypeExe  = "executable"
+	ItemTypeNode = "node"
+)
+
 type MenuItem struct {
 	Name     string     `json:"name"`
 	ItemType string     `json:"type"`
@@ -26,6 +43,7 @@ type TreeNode struct {
 	ScriptPath   string      // Path to the script to execute
 }
 
+// Builder uses a menu item and appends it to the parent node.
 func Builder(item MenuItem, parent *TreeNode) *TreeNode {
 	var node *TreeNode
 
