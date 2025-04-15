@@ -1,0 +1,11 @@
+{
+  "name": "Scripts",
+  "type": "node",
+  "children": [
+    {
+      "name": "Open Git Remote",
+      "type": "executable",
+      "path": "D:/dui-scripts/gitopen.sh"
+    }
+  ]
+}
